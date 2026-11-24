@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pathfinder OBD dashboard</title>
+<style>
+:root{--bg:#0f1114;--card:#181b20;--line:#2a2f37;--tx:#eceae4;--mut:#9a988f;--blue:#3987e5;--grn:#2fbf8a;--amb:#eda100;--red:#e66767;--org:#eb6834}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.4 -apple-system,system-ui,Segoe UI,Roboto,sans-serif;padding:env(safe-area-inset-top) 12px 28px}
+header{display:flex;flex-wrap:wrap;gap:8px;justify-content:space-between;align-items:center;padding:10px 0}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.dot{width:10px;height:10px;border-radius:50%;background:#555;display:inline-block}
+.dot.ok{background:var(--grn)}.dot.err{background:var(--red)}.dot.wait{background:var(--amb)}
+button,input{font:inherit;color:var(--tx);background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px}
+button{cursor:pointer}button.pri{background:var(--blue);border-color:var(--blue);color:#fff}
+button.on{border-color:var(--blue);color:var(--blue)}button.danger{border-color:var(--red);color:var(--red)}
+nav{display:flex;gap:6px;margin-bottom:10px;flex-wrap:wrap}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:10px}
+.grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:10px}
+.tile .l{font-size:12px;color:var(--mut)}.tile .v{font-size:22px;font-weight:600;font-variant-numeric:tabular-nums}.tile .u{font-size:12px;color:var(--mut);margin-left:3px;font-weight:400}
+.tile.warn{border-color:var(--amb)}.tile.crit{border-color:var(--red)}
+.gauges{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));margin-bottom:10px}
+.gauges svg{width:100%;display:block}
+.big{font-size:56px;font-weight:600;line-height:1}
+.gear{display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+.hint{font-size:12px;color:var(--mut)}
+.banner{border-radius:10px;padding:10px 12px;margin-bottom:10px;border:1px solid var(--amb);color:var(--amb)}
+.banner.crit{border-color:var(--red);color:var(--red)}
+table{width:100%;border-collapse:collapse;font-size:14px}td{padding:5px 0;border-top:1px solid var(--line)}td:last-child{text-align:right}
+.pill{padding:1px 8px;border-radius:8px;font-size:12px}.pill.g{background:#12372b;color:var(--grn)}.pill.a{background:#3d2f0a;color:var(--amb)}.pill.r{background:#401c1c;color:var(--red)}
+pre{margin:0;white-space:pre-wrap;word-break:break-all;font:12px/1.4 ui-monospace,Menlo,monospace;color:var(--mut);max-height:200px;overflow:auto}
+canvas{width:100%;height:150px;display:block}
+h2{font-size:16px;margin:0 0 8px}
+label.f{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:5px 0}label.f input{width:90px;text-align:right}
+</style>
+</head>
+<body>
+<header>
+  <div class="row"><b>Pathfinder YD25</b><span class="dot" id="dot"></span><span id="status" class="hint">Not connected</span></div>
+  <div class="row"><button id="bConnect" class="pri">Connect adapter</button><button id="bDemo">Demo mode</button><button id="bStop" hidden>Disconnect</button></div>
+</header>
+<nav id="nav">
+  <button data-v="live" class="on">Live</button><button data-v="codes">Codes</button><button data-v="info">Info</button><button data-v="set">Settings</button>
+</nav>
+
+<section id="v-live">
+  <div id="warn"></div>
+  <div class="gauges" id="gauges"></div>
+  <div class="card gear">
+    <div><div class="hint">Estimated gear</div><div class="big" id="gear">-</div></div>
+    <div style="flex:1;min-width:200px">
+      <div id="ratio" class="hint">RPM per km/h: -</div>
+      <div class="row" style="margin:6px 0">Set gear: <span id="gbtns" class="row"></span><button id="gClear">Reset</button></div>
+      <div class="hint">Drive steadily in a gear with the clutch out, then tap that gear number. Do it once for each gear.</div>
+    </div>
+  </div>
+  <div class="grid" id="tiles"></div>
+  <div class="card"><div class="row" style="justify-content:space-between"><h2>Live graph (60 s)</h2><span class="hint"><span style="color:var(--blue)">RPM</span> &middot; <span style="color:var(--org)">Boost</span></span></div><canvas id="chart"></canvas></div>
+  <div class="card"><h2>Recording</h2>
+    <div class="row"><button id="bRec">Start recording</button><button id="bCsv">Download CSV</button><button id="bCopy">Copy CSV</button><span id="recInfo" class="hint"></span></div>
+  </div>
+</section>
+
+<section id="v-codes" hidden>
+  <div class="card"><h2>Fault codes</h2>
+    <div class="row"><button id="bStored">Read stored</button><button id="bPending">Read pending</button><button id="bClear" class="danger">Clear codes</button></div>
+    <div id="dtcOut" style="margin-top:10px" class="hint">Tap a button to read.</div>
+  </div>
+  <div class="card"><h2>Freeze frame</h2><button id="bFreeze">Read freeze frame</button><div id="ffOut" style="margin-top:10px" class="hint"></div></div>
+  <div class="card"><h2>Readiness and MIL</h2><button id="bReady">Read status</button><div id="rdOut" style="margin-top:10px" class="hint"></div></div>
+</section>
+
+<section id="v-info" hidden>
+  <div class="card"><h2>Vehicle and adapter</h2><table id="infoT"></table></div>
+  <div class="card"><h2>Supported live data (PIDs)</h2><div id="pidList" class="hint">Connect first.</div></div>
+  <div class="card"><h2>Raw terminal (read-only)</h2>
+    <div class="row"><input id="rawIn" placeholder="e.g. ATRV or 010C" style="flex:1;min-width:140px" autocapitalize="characters" autocomplete="off"><button id="rawGo">Send</button></div>
+    <div class="hint" style="margin:6px 0">Allowed: AT commands and read modes 01, 02, 03, 06, 07, 09, 0A. Clearing is only on the Codes tab.</div>
+    <pre id="rawLog"></pre>
+  </div>
+</section>
+
+<section id="v-set" hidden>
+  <div class="card"><h2>Warning levels</h2>
+    <div class="hint" style="margin-bottom:6px">Generic starting values. Set them from your workshop manual.</div>
+    <label class="f">Coolant warn (&deg;C)<input type="number" id="s-coolWarn"></label>
+    <label class="f">Coolant critical (&deg;C)<input type="number" id="s-coolCrit"></label>
+    <label class="f">Boost warn (bar)<input type="number" step="0.1" id="s-boostWarn"></label>
+    <label class="f">Intake air warn (&deg;C)<input type="number" id="s-iatWarn"></label>
+    <label class="f">Voltage low (V)<input type="number" step="0.1" id="s-voltLow"></label>
+    <label class="f">Voltage high (V)<input type="number" step="0.1" id="s-voltHigh"></label>
+    <div class="row" style="margin-top:8px"><button id="sSave" class="pri">Save</button><button id="sReset">Restore defaults</button><span id="sMsg" class="hint"></span></div>
+  </div>
+</section>
+
+<script>
+//#PURE-START
+const PIDS = {
+ '04':{name:'Engine load',unit:'%',n:1,dp:0,dec:b=>b[0]*100/255},
+ '05':{name:'Coolant temp',unit:'°C',n:1,dp:0,dec:b=>b[0]-40},
+ '0B':{name:'Manifold pressure',unit:'kPa',n:1,dp:0,dec:b=>b[0]},
+ '0C':{name:'RPM',unit:'rpm',n:2,dp:0,dec:b=>(b[0]*256+b[1])/4},
+ '0D':{name:'Speed',unit:'km/h',n:1,dp:0,dec:b=>b[0]},
+ '0E':{name:'Timing advance',unit:'°',n:1,dp:1,dec:b=>b[0]/2-64},
+ '0F':{name:'Intake air temp',unit:'°C',n:1,dp:0,dec:b=>b[0]-40},
+ '10':{name:'MAF',unit:'g/s',n:2,dp:1,dec:b=>(b[0]*256+b[1])/100},
+ '11':{name:'Throttle',unit:'%',n:1,dp:0,dec:b=>b[0]*100/255},
+ '1F':{name:'Run time',unit:'s',n:2,dp:0,dec:b=>b[0]*256+b[1]},
+ '21':{name:'Distance with MIL on',unit:'km',n:2,dp:0,dec:b=>b[0]*256+b[1]},
+ '23':{name:'Rail pressure',unit:'bar',n:2,dp:0,dec:b=>(b[0]*256+b[1])/10},
+ '2C':{name:'EGR commanded',unit:'%',n:1,dp:0,dec:b=>b[0]*100/255},
+ '2D':{name:'EGR error',unit:'%',n:1,dp:1,dec:b=>b[0]*100/128-100},
+ '2F':{name:'Fuel level',unit:'%',n:1,dp:0,dec:b=>b[0]*100/255},
+ '31':{name:'Distance since clear',unit:'km',n:2,dp:0,dec:b=>b[0]*256+b[1]},
+ '33':{name:'Barometric pressure',unit:'kPa',n:1,dp:0,dec:b=>b[0]},
+ '42':{name:'Module voltage',unit:'V',n:2,dp:1,dec:b=>(b[0]*256+b[1])/1000},
+ '49':{name:'Accelerator pedal',unit:'%',n:1,dp:0,dec:b=>b[0]*100/255},
+ '5C':{name:'Oil temp',unit:'°C',n:1,dp:0,dec:b=>b[0]-40},
+ '5E':{name:'Fuel rate',unit:'L/h',n:2,dp:1,dec:b=>(b[0]*256+b[1])/20}
+};
+const FAST = ['0C','0D','0B','49','04'];
+const SLOW = ['05','0F','10','23','2C','2D','42','5C','5E','33','2F','0E','11'];
+const TILE_ORDER = ['05','04','49','10','0F','23','2C','2D','42','5C','5E','2F','33','0E','11','0B'];
+const DTC_NAMES = {
+ 'P0087':'Fuel rail pressure too low','P0088':'Fuel rail pressure too high','P0089':'Fuel pressure regulator performance',
+ 'P0101':'MAF sensor range or performance','P0102':'MAF sensor circuit low','P0103':'MAF sensor circuit high',
+ 'P0112':'Intake air temp sensor circuit low','P0113':'Intake air temp sensor circuit high',
+ 'P0117':'Coolant temp sensor circuit low','P0118':'Coolant temp sensor circuit high',
+ 'P0200':'Injector circuit','P0201':'Injector circuit, cylinder 1','P0202':'Injector circuit, cylinder 2','P0203':'Injector circuit, cylinder 3','P0204':'Injector circuit, cylinder 4',
+ 'P0234':'Turbo overboost','P0299':'Turbo underboost','P0335':'Crankshaft position sensor circuit','P0340':'Camshaft position sensor circuit',
+ 'P0380':'Glow plug circuit A','P0401':'EGR flow insufficient','P0402':'EGR flow excessive','P0500':'Vehicle speed sensor',
+ 'P0562':'System voltage low','P0563':'System voltage high','P0606':'Control module processor fault','P0670':'Glow plug control module'
+};
+const RANGE=['20','40','60','80','A0','C0'];
+const DEFAULTS = {coolWarn:100,coolCrit:108,boostWarn:1.5,iatWarn:70,voltLow:12.0,voltHigh:15.2};
+
+function hex2(n){return (n&255).toString(16).toUpperCase().padStart(2,'0');}
+function hexBytes(s){const h=String(s).replace(/[^0-9A-Fa-f]/g,'');const o=[];for(let i=0;i+1<h.length;i+=2)o.push(parseInt(h.substr(i,2),16));return o;}
+function cleanLines(raw,cmd){
+ const c=cmd?String(cmd).replace(/\s+/g,'').toUpperCase():null;
+ return String(raw).split(/[\r\n]+/).map(s=>s.replace(/>/g,'').trim()).filter(s=>{
+  if(!s)return false;
+  if(/^SEARCHING/i.test(s)||/^BUS INIT/i.test(s))return false;
+  if(c&&s.replace(/\s+/g,'').toUpperCase()===c)return false;
+  return true;
+ });
+}
+function joinFrames(lines){
+ const out=[];let idx=-1;
+ for(const raw of lines){
+  const l=raw.replace(/\s+/g,'').toUpperCase();
+  if(/^[0-9A-F]{3}$/.test(l))continue;
+  const m=l.match(/^(\d):([0-9A-F]*)$/);
+  if(m){
+   if(m[1]==='0'){out.push(m[2]);idx=out.length-1;}
+   else if(idx>=0){out[idx]+=m[2];}
+  }else{out.push(l);idx=-1;}
+ }
+ return out;
+}
+function findResponse(lines,prefix){
+ for(const m of joinFrames(lines)){if(m.startsWith(prefix))return hexBytes(m.slice(prefix.length));}
+ return null;
+}
+function parseSupported(bytes,baseHex){
+ const base=parseInt(baseHex,16),out=[];
+ if(!bytes||bytes.length<4)return out;
+ for(let i=0;i<32;i++){if(bytes[i>>3]&(0x80>>(i&7)))out.push(hex2(base+i+1));}
+ return out;
+}
+function dtcName(b0,b1){
+ return 'PCBU'[b0>>6]+((b0>>4)&3)+(b0&15).toString(16).toUpperCase()+hex2(b1);
+}
+function parseDtcs(lines,respHex,isCAN){
+ const codes=[];
+ for(const m of joinFrames(lines)){
+  if(!m.startsWith(respHex))continue;
+  let b=hexBytes(m.slice(respHex.length));
+  if(isCAN)b=b.slice(1);
+  for(let i=0;i+1<b.length;i+=2){if(b[i]===0&&b[i+1]===0)continue;codes.push(dtcName(b[i],b[i+1]));}
+ }
+ return [...new Set(codes)];
+}
+function parseVin(lines){
+ let s='';
+ for(const m of joinFrames(lines)){
+  if(!m.startsWith('4902'))continue;
+  const b=hexBytes(m.slice(4)).slice(1);
+  for(const x of b)if(x>=0x30&&x<=0x7A)s+=String.fromCharCode(x);
+ }
+ return s;
+}
+function readiness(b){
+ if(!b||b.length<4)return null;
+ const diesel=!!(b[1]&8);
+ const r={mil:!!(b[0]&128),count:b[0]&127,diesel,items:[]};
+ const add=(name,sup,inc)=>{if(sup)r.items.push({name,ready:!inc});};
+ add('Misfire',b[1]&1,b[1]&16);add('Fuel system',b[1]&2,b[1]&32);add('Components',b[1]&4,b[1]&64);
+ if(diesel){
+  add('NMHC catalyst',b[2]&1,b[3]&1);add('NOx/SCR',b[2]&2,b[3]&2);add('Boost pressure',b[2]&8,b[3]&8);
+  add('Exhaust gas sensor',b[2]&32,b[3]&32);add('Particulate filter',b[2]&64,b[3]&64);add('EGR/VVT',b[2]&128,b[3]&128);
+ }else{
+  add('Catalyst',b[2]&1,b[3]&1);add('Heated catalyst',b[2]&2,b[3]&2);add('EVAP',b[2]&4,b[3]&4);add('Secondary air',b[2]&8,b[3]&8);
+  add('O2 sensor',b[2]&32,b[3]&32);add('O2 heater',b[2]&64,b[3]&64);add('EGR',b[2]&128,b[3]&128);
+ }
+ return r;
+}
+function boostBar(map,baro){return (map-(baro||101))/100;}
+function estimateGear(rpm,speed,table){
+ if(!(speed>=4)||!(rpm>=500))return null;
+ const r=rpm/speed;let best=null,bd=0.12;
+ for(const g of Object.keys(table)){const d=Math.abs(r-table[g])/table[g];if(d<bd){bd=d;best=g;}}
+ return best;
+}
+function fmtVal(pid,v){const p=PIDS[pid];return (v==null||isNaN(v))?'-':Number(v).toFixed(p.dp);}
+
+const DEMO_SET = Object.keys(PIDS).filter(p=>p!=='11'&&p!=='0E');
+function demoScenario(t){
+ const sp=Math.max(0,50+45*Math.sin(t/12));
+ const g=sp<15?1:sp<30?2:sp<50?3:sp<75?4:5;
+ const ratio=[0,70,42,28,20,15][g];
+ const pedal=15+25*Math.abs(Math.sin(t/5));
+ const rpm=Math.max(800,sp*ratio);
+ return {
+  '04':20+pedal,'05':88+2*Math.sin(t/30),'0B':100+pedal*2.2,'0C':rpm,'0D':Math.round(sp),'0F':30,
+  '10':6+pedal*0.4,'1F':Math.round(t)+600,'21':0,'23':350+pedal*20,'2C':10+pedal/2,'2D':1.5,'2F':62,'31':1234,'33':101,
+  '42':14.1,'49':pedal,'5C':92,'5E':3+pedal/6
+ };
+}
+function enc(pid,v){
+ const u16=x=>{x=Math.max(0,Math.round(x));return [(x>>8)&255,x&255];};
+ switch(pid){
+  case '04':case '2C':case '2F':case '49':case '11':return [Math.round(v*255/100)];
+  case '05':case '0F':case '5C':return [Math.round(v+40)];
+  case '0B':case '0D':case '33':return [Math.round(v)];
+  case '0C':return u16(v*4);
+  case '10':return u16(v*100);
+  case '1F':case '21':case '31':return u16(v);
+  case '23':return u16(v*10);
+  case '2D':return [Math.round((v+100)*128/100)];
+  case '42':return u16(v*1000);
+  case '5E':return u16(v*20);
+  case '0E':return [Math.round((v+64)*2)];
+ }
+ return [0];
+}
+function supportMask(baseHex,set){
+ const base=parseInt(baseHex,16),m=[0,0,0,0];let beyond=false;
+ for(const p of set){const n=parseInt(p,16);if(n>base+32)beyond=true;if(n>base&&n<=base+32){const i=n-base-1;m[i>>3]|=0x80>>(i&7);}}
+ if(beyond)m[3]|=1;
+ return m;
+}
+function demoRespond(cmd,t){
+ const c=String(cmd).replace(/\s+/g,'').toUpperCase();
+ const hx=a=>a.map(hex2).join(' ');
+ if(c==='ATZ')return 'ELM327 v1.5';
+ if(c==='ATI')return 'ELM327 v1.5 (demo)';
+ if(c==='ATDPN')return 'A6';
+ if(c==='ATRV')return '12.4V';
+ if(c.startsWith('AT'))return 'OK';
+ const sc=demoScenario(t);
+ if(/^01(00|20|40|60|80|A0)$/.test(c)){const b=c.slice(2);return '41 '+b+' '+hx(supportMask(b,DEMO_SET.concat(['01','1F'])));}
+ if(c==='0101')return '41 01 02 0F A8 80';
+ if(/^01[0-9A-F]{2}$/.test(c)){const p=c.slice(2);return DEMO_SET.includes(p)?'41 '+p+' '+hx(enc(p,sc[p])):'NO DATA';}
+ if(c==='03')return '43 02 00 87 02 99';
+ if(c==='07')return '47 00';
+ if(c==='04')return '44';
+ if(c==='020200')return '42 02 00 00 87';
+ if(/^02[0-9A-F]{2}00$/.test(c)){const p=c.slice(2,4);return DEMO_SET.includes(p)?'42 '+p+' 00 '+hx(enc(p,sc[p])):'NO DATA';}
+ if(c==='0902'){
+  const v=Array.from('DEMO0000000000001').map(ch=>ch.charCodeAt(0));
+  const all=[0x49,0x02,0x01].concat(v);
+  const f=[all.slice(0,6),all.slice(6,13),all.slice(13,20)];
+  return '014\r0: '+hx(f[0])+'\r1: '+hx(f[1])+'\r2: '+hx(f[2]);
+ }
+ return 'NO DATA';
+}
+//#PURE-END
+
+const $=id=>document.getElementById(id);
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+function loadJson(k,d){try{const v=localStorage.getItem(k);return v?Object.assign(Array.isArray(d)?[]:{},d,JSON.parse(v)):Object.assign({},d);}catch(e){return Object.assign({},d);}}
+function saveJson(k,v){try{localStorage.setItem(k,JSON.stringify(v));}catch(e){}}
+let S=loadJson('pf-settings',DEFAULTS),gears=loadJson('pf-gears',{});
+let T=null,running=false,isCAN=true,supported=new Set(),vals={},hist=[],rec=null,demoMode=false,vinText='',protoText='',adapterText='',t0=0;
+
+function setStatus(msg,kind){$('status').textContent=msg;$('dot').className='dot '+(kind||'');}
+function rawLog(s){const el=$('rawLog');el.textContent=(s+'\n'+el.textContent).slice(0,4000);}
+
+const SERVICES=[0xfff0,0xffe0,0xffb0,0x18f0,'e7810a71-73ae-499d-8c15-faa9aef0c3f2','49535343-fe7d-4ae5-8fa9-9fafd205e455'];
+class BleTransport{
+ constructor(onDrop){this.onDrop=onDrop;this.buf='';this.pending=null;this.chain=Promise.resolve();this.dec=new TextDecoder();this.enc=new TextEncoder();}
+ async connect(){
+  const dev=await navigator.bluetooth.requestDevice({acceptAllDevices:true,optionalServices:SERVICES});
+  this.name=dev.name||'adapter';
+  dev.addEventListener('gattserverdisconnected',()=>this.onDrop());
+  this.server=await dev.gatt.connect();
+  const services=await this.server.getPrimaryServices();
+  let notify=null,write=null;
+  for(const s of services){
+   let n=null,w=null;
+   for(const c of await s.getCharacteristics()){
+    if(!n&&(c.properties.notify||c.properties.indicate))n=c;
+    if(!w&&(c.properties.write||c.properties.writeWithoutResponse))w=c;
+   }
+   if(n&&w){notify=n;write=w;break;}
+  }
+  if(!notify)throw new Error('No usable serial characteristic found on this adapter. It may be a classic Bluetooth adapter, which browsers cannot use.');
+  this.write=write;
+  notify.addEventListener('characteristicvaluechanged',e=>{
+   this.buf+=this.dec.decode(e.target.value);
+   if(this.buf.includes('>')&&this.pending){const p=this.pending;this.pending=null;clearTimeout(p.timer);const out=this.buf;this.buf='';p.resolve(out);}
+  });
+  await notify.startNotifications();
+ }
+ send(cmd,timeout){
+  const run=()=>new Promise(async(resolve,reject)=>{
+   this.buf='';
+   this.pending={resolve,timer:setTimeout(()=>{this.pending=null;const o=this.buf;this.buf='';o?resolve(o):reject(new Error('Timeout on '+cmd));},timeout||4000)};
+   try{
+    const data=this.enc.encode(cmd+'\r');
+    for(let i=0;i<data.length;i+=20){
+     const chunk=data.slice(i,i+20);
+     if(this.write.properties.writeWithoutResponse&&this.write.writeValueWithoutResponse)await this.write.writeValueWithoutResponse(chunk);
+     else await this.write.writeValue(chunk);
+    }
+   }catch(e){clearTimeout(this.pending&&this.pending.timer);this.pending=null;reject(e);}
+  });
+  const p=this.chain.then(run,run);
+  this.chain=p.catch(()=>{});
+  return p;
+ }
+ close(){try{this.server&&this.server.disconnect();}catch(e){}}
+}
+class DemoTransport{
+ constructor(){this.t0=Date.now();this.name='Demo adapter';}
+ async send(cmd){await sleep(30);return demoRespond(cmd,(Date.now()-this.t0)/1000);}
+ close(){}
+}
+
+async function cmd(c,timeout){const r=await T.send(c,timeout);return cleanLines(r,c);}
+
+async function startSession(){
+  setStatus('Starting adapter...','wait');
+  await cmd('ATZ',5000);await sleep(300);
+  for(const c of ['ATE0','ATL0','ATS0','ATH0','ATSP0'])await cmd(c);
+  adapterText=(await cmd('ATI')).join(' ');
+  setStatus('Finding protocol (ignition on?)...','wait');
+  const first=await cmd('0100',12000);
+  if(first.join('').includes('UNABLE')||first.join('').includes('ERROR')||!findResponse(first,'4100')){
+    throw new Error('Adapter found, but the car did not answer. Turn the ignition on and try again.');
+  }
+  const dp=(await cmd('ATDPN'))[0]||'';protoText=dp;
+  isCAN='6789'.includes(dp.replace(/\s/g,'').slice(-1));
+  supported=new Set();
+  let base='00';
+  for(let i=0;i<7;i++){
+   const lines=i===0?first:await cmd('01'+base,6000);
+   const b=findResponse(lines,'41'+base);
+   if(!b)break;
+   const list=parseSupported(b,base);list.forEach(p=>supported.add(p));
+   const next=hex2(parseInt(base,16)+32);
+   if(!list.includes(next))break;
+   base=next;
+  }
+  try{vinText=parseVin(await cmd('0902',8000));}catch(e){vinText='';}
+  vals={};hist=[];t0=Date.now();
+  buildUI();
+  running=true;
+  setStatus('Connected: '+(T.name||'adapter'),'ok');
+  $('bConnect').hidden=true;$('bDemo').hidden=true;$('bStop').hidden=false;
+  loop();
+}
+
+async function poll(p){
+  const lines=await cmd('01'+p);
+  const b=findResponse(lines,'41'+p);
+  if(b&&b.length>=PIDS[p].n)vals[p]=PIDS[p].dec(b);
+}
+async function loop(){
+  const fast=FAST.filter(p=>supported.has(p)),slow=SLOW.filter(p=>supported.has(p));
+  let cycle=0,fails=0;
+  while(running){
+    try{
+      for(const p of fast)await poll(p);
+      if(slow.length)await poll(slow[cycle%slow.length]);
+      if(!supported.has('42')&&cycle%12===0){const r=await cmd('ATRV');const m=(r[0]||'').match(/([\d.]+)/);if(m)vals.RV=parseFloat(m[1]);}
+      cycle++;fails=0;
+      afterCycle();
+    }catch(e){
+      if(!running)break;
+      fails++;
+      if(fails>=4){setStatus('Connection lost: '+e.message,'err');stopSession(true);break;}
+      await sleep(200);
+    }
+  }
+}
+function stopSession(keepMsg){
+  running=false;
+  if(T){T.close();T=null;}
+  $('bConnect').hidden=false;$('bDemo').hidden=false;$('bStop').hidden=true;
+  if(!keepMsg)setStatus('Not connected','');
+}
+function onDrop(){if(running){setStatus('Adapter disconnected','err');stopSession(true);}}
+
+function volts(){return vals['42']!=null?vals['42']:vals.RV;}
+function curBoost(){return vals['0B']!=null?boostBar(vals['0B'],vals['33']):null;}
+function gaugeSVG(id,label,unit,color){
+  return '<div class="card"><svg viewBox="0 0 140 90" role="img" aria-label="'+label+' gauge"><path d="M10 78 A60 60 0 0 1 130 78" pathLength="100" fill="none" stroke="#2a2f37" stroke-width="10"/>'
+   +'<path id="g-'+id+'-a" d="M10 78 A60 60 0 0 1 130 78" pathLength="100" fill="none" stroke="'+color+'" stroke-width="10" stroke-dasharray="0 100"/>'
+   +'<text id="g-'+id+'-v" x="70" y="64" text-anchor="middle" font-size="24" font-weight="600" fill="#eceae4">-</text>'
+   +'<text x="70" y="82" text-anchor="middle" font-size="11" fill="#9a988f">'+label+' ('+unit+')</text></svg></div>';
+}
+function setGauge(id,val,min,max,txt){
+  const pct=val==null?0:Math.max(0,Math.min(100,(val-min)*100/(max-min)));
+  $('g-'+id+'-a').setAttribute('stroke-dasharray',pct.toFixed(1)+' 100');
+  $('g-'+id+'-v').textContent=txt;
+}
+function buildUI(){
+  let g='';
+  if(supported.has('0C'))g+=gaugeSVG('rpm','RPM','rpm','#3987e5');
+  if(supported.has('0D'))g+=gaugeSVG('spd','Speed','km/h','#2fbf8a');
+  if(supported.has('0B'))g+=gaugeSVG('boost','Boost','bar','#eb6834');
+  $('gauges').innerHTML=g;
+  let t='';
+  for(const p of TILE_ORDER){if(supported.has(p))t+='<div class="card tile" id="t-'+p+'"><div class="l">'+PIDS[p].name+'</div><div><span class="v" id="tv-'+p+'">-</span><span class="u">'+PIDS[p].unit+'</span></div></div>';}
+  if(!supported.has('42'))t+='<div class="card tile" id="t-RV"><div class="l">Adapter voltage</div><div><span class="v" id="tv-RV">-</span><span class="u">V</span></div></div>';
+  $('tiles').innerHTML=t;
+  $('gbtns').innerHTML=[1,2,3,4,5,6].map(n=>'<button data-g="'+n+'">'+n+'</button>').join('');
+  $('pidList').innerHTML=Array.from(supported).filter(p=>!RANGE.includes(p)).sort().map(p=>PIDS[p]?p+' '+PIDS[p].name:p).join('<br>');
+  fillInfo();
+}
+function fillInfo(){
+  const rows=[['Adapter',adapterText||'-'],['Name',T&&T.name?T.name:'-'],['Protocol code',protoText||'-'],['VIN',vinText||'Not reported'],['PIDs found',Array.from(supported).filter(p=>!RANGE.includes(p)).length]];
+  if(demoMode)rows.unshift(['Mode','Demo (simulated data)']);
+  $('infoT').innerHTML=rows.map(r=>'<tr><td>'+r[0]+'</td><td>'+r[1]+'</td></tr>').join('');
+}
+function tileClass(p,v){
+  if(v==null)return '';
+  if(p==='05')return v>=S.coolCrit?'crit':v>=S.coolWarn?'warn':'';
+  if(p==='0F')return v>=S.iatWarn?'warn':'';
+  if(p==='42'){return v<S.voltLow||v>S.voltHigh?'warn':'';}
+  return '';
+}
+function afterCycle(){
+  const rpm=vals['0C'],spd=vals['0D'],bo=curBoost();
+  if(supported.has('0C'))setGauge('rpm',rpm,0,5000,rpm==null?'-':Math.round(rpm));
+  if(supported.has('0D'))setGauge('spd',spd,0,200,spd==null?'-':Math.round(spd));
+  if(supported.has('0B'))setGauge('boost',bo,0,2,bo==null?'-':bo.toFixed(2));
+  for(const p of TILE_ORDER){
+    if(!supported.has(p))continue;
+    const el=$('tv-'+p);if(el)el.textContent=fmtVal(p,vals[p]);
+    const card=$('t-'+p);if(card)card.className='card tile '+tileClass(p,vals[p]);
+  }
+  if(!supported.has('42')&&$('tv-RV')){$('tv-RV').textContent=vals.RV==null?'-':vals.RV.toFixed(1);$('t-RV').className='card tile '+(vals.RV!=null&&(vals.RV<S.voltLow||vals.RV>S.voltHigh)?'warn':'');}
+  const g=estimateGear(rpm,spd,gears);
+  $('gear').textContent=g||'-';
+  $('ratio').textContent='RPM per km/h: '+(spd>=4&&rpm?(rpm/spd).toFixed(1):'-')+(Object.keys(gears).length?'  |  set gears: '+Object.keys(gears).sort().join(', '):'');
+  const w=[];let crit=false;
+  const c=vals['05'];if(c!=null){if(c>=S.coolCrit){w.push('Coolant '+Math.round(c)+' °C: critical');crit=true;}else if(c>=S.coolWarn)w.push('Coolant '+Math.round(c)+' °C: high');}
+  if(bo!=null&&bo>=S.boostWarn)w.push('Boost '+bo.toFixed(2)+' bar: above your warning level');
+  if(vals['0F']!=null&&vals['0F']>=S.iatWarn)w.push('Intake air '+Math.round(vals['0F'])+' °C: high');
+  const v=volts();if(v!=null&&(v<S.voltLow||v>S.voltHigh)&&(rpm==null||rpm>600))w.push('Voltage '+v.toFixed(1)+' V: outside range');
+  $('warn').innerHTML=w.length?'<div class="banner'+(crit?' crit':'')+'">'+w.join('<br>')+'</div>':'';
+  const now=(Date.now()-t0)/1000;
+  hist.push({t:now,rpm:rpm,boost:bo});
+  while(hist.length&&hist[0].t<now-60)hist.shift();
+  drawChart();
+  if(rec){
+    rec.rows.push([now.toFixed(1)].concat(rec.cols.map(p=>p==='boost'?(bo==null?'':bo.toFixed(2)):(p==='gear'?(g||''):(vals[p]==null?'':Number(vals[p]).toFixed(PIDS[p]?PIDS[p].dp+1:1))))));
+    $('recInfo').textContent='Recording: '+rec.rows.length+' rows';
+  }
+}
+function drawChart(){
+  const cv=$('chart'),dpr=window.devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight;
+  if(!w)return;
+  if(cv.width!==w*dpr){cv.width=w*dpr;cv.height=h*dpr;}
+  const x=cv.getContext('2d');x.setTransform(dpr,0,0,dpr,0,0);x.clearRect(0,0,w,h);
+  x.strokeStyle='#2a2f37';x.lineWidth=1;
+  for(let i=1;i<4;i++){x.beginPath();x.moveTo(0,h*i/4);x.lineTo(w,h*i/4);x.stroke();}
+  if(hist.length<2)return;
+  const now=hist[hist.length-1].t;
+  const line=(key,min,max,color)=>{
+    x.strokeStyle=color;x.lineWidth=2;x.beginPath();let st=false;
+    for(const p of hist){const v=p[key];if(v==null)continue;const px=w-(now-p.t)/60*w,py=h-4-(Math.max(min,Math.min(max,v))-min)/(max-min)*(h-8);if(!st){x.moveTo(px,py);st=true;}else x.lineTo(px,py);}
+    x.stroke();
+  };
+  line('rpm',0,5000,'#3987e5');line('boost',0,2,'#eb6834');
+}
+
+document.querySelectorAll('#nav button').forEach(b=>b.addEventListener('click',()=>{
+  document.querySelectorAll('#nav button').forEach(x=>x.classList.toggle('on',x===b));
+  ['live','codes','info','set'].forEach(v=>$('v-'+v).hidden=(v!==b.dataset.v));
+  if(b.dataset.v==='live')drawChart();
+}));
+$('gbtns').addEventListener('click',e=>{
+  const g=e.target.dataset&&e.target.dataset.g;if(!g)return;
+  const rpm=vals['0C'],spd=vals['0D'];
+  if(!(spd>=8&&rpm>=800)){$('ratio').textContent='Need at least 8 km/h and 800 rpm to set a gear.';return;}
+  gears[g]=rpm/spd;saveJson('pf-gears',gears);
+});
+$('gClear').addEventListener('click',()=>{gears={};saveJson('pf-gears',gears);});
+
+$('bConnect').addEventListener('click',async()=>{
+  if(!navigator.bluetooth){setStatus('This browser has no Web Bluetooth. Open this page in Bluefy.','err');return;}
+  demoMode=false;
+  try{T=new BleTransport(onDrop);setStatus('Choose your adapter...','wait');await T.connect();await startSession();}
+  catch(e){setStatus((e&&e.message)||String(e),'err');if(T){T.close();T=null;}running=false;$('bConnect').hidden=false;$('bDemo').hidden=false;$('bStop').hidden=true;}
+});
+$('bDemo').addEventListener('click',async()=>{
+  demoMode=true;T=new DemoTransport();
+  try{await startSession();setStatus('Demo mode: simulated data','wait');}catch(e){setStatus(e.message,'err');}
+});
+$('bStop').addEventListener('click',()=>stopSession(false));
+
+function dtcHtml(codes){
+  if(!codes.length)return '<span class="pill g">No codes</span>';
+  return '<table>'+codes.map(c=>'<tr><td><b>'+c+'</b></td><td style="text-align:left;padding-left:10px">'+(DTC_NAMES[c]||'No description stored. Look it up for Nissan YD25.')+'</td></tr>').join('')+'</table>';
+}
+async function guard(fn,out){
+  if(!T){$(out).textContent='Connect first.';return;}
+  try{await fn();}catch(e){$(out).textContent='Failed: '+e.message;}
+}
+$('bStored').addEventListener('click',()=>guard(async()=>{$('dtcOut').textContent='Reading...';$('dtcOut').innerHTML='<div class="hint" style="margin-bottom:6px">Stored codes</div>'+dtcHtml(parseDtcs(await cmd('03',8000),'43',isCAN));},'dtcOut'));
+$('bPending').addEventListener('click',()=>guard(async()=>{$('dtcOut').textContent='Reading...';$('dtcOut').innerHTML='<div class="hint" style="margin-bottom:6px">Pending codes</div>'+dtcHtml(parseDtcs(await cmd('07',8000),'47',isCAN));},'dtcOut'));
+let clearArmed=false;
+$('bClear').addEventListener('click',()=>guard(async()=>{
+  if(!clearArmed){clearArmed=true;$('bClear').textContent='Tap again to confirm';setTimeout(()=>{clearArmed=false;$('bClear').textContent='Clear codes';},5000);return;}
+  clearArmed=false;$('bClear').textContent='Clear codes';
+  await cmd('04',8000);$('dtcOut').innerHTML='<span class="pill a">Clear sent</span> Freeze frame and readiness reset. Read codes again to check.';
+},'dtcOut'));
+$('bFreeze').addEventListener('click',()=>guard(async()=>{
+  $('ffOut').textContent='Reading...';
+  const d=findResponse(await cmd('020200'),'4202');
+  let html='';
+  if(!d||d.length<3||(d[1]===0&&d[2]===0)){html='<span class="pill g">No freeze frame stored</span>';}
+  else{
+    html='<div style="margin-bottom:6px">Caused by <b>'+dtcName(d[1],d[2])+'</b></div><table>';
+    for(const p of ['0C','0D','05','04','0B','0F','10','23']){
+      if(!supported.has(p))continue;
+      const b=findResponse(await cmd('02'+p+'00'),'42'+p);
+      if(b&&b.length>=PIDS[p].n+1)html+='<tr><td>'+PIDS[p].name+'</td><td>'+fmtVal(p,PIDS[p].dec(b.slice(1)))+' '+PIDS[p].unit+'</td></tr>';
+    }
+    html+='</table>';
+  }
+  $('ffOut').innerHTML=html;
+},'ffOut'));
+$('bReady').addEventListener('click',()=>guard(async()=>{
+  const r=readiness(findResponse(await cmd('0101'),'4101'));
+  if(!r){$('rdOut').textContent='No answer.';return;}
+  $('rdOut').innerHTML='<div style="margin-bottom:6px">Warning light: <span class="pill '+(r.mil?'r':'g')+'">'+(r.mil?'ON':'off')+'</span> &nbsp; Stored codes: '+r.count+'</div><table>'
+   +r.items.map(i=>'<tr><td>'+i.name+'</td><td><span class="pill '+(i.ready?'g':'a')+'">'+(i.ready?'Ready':'Not ready')+'</span></td></tr>').join('')+'</table>';
+},'rdOut'));
+
+$('rawGo').addEventListener('click',async()=>{
+  const c=$('rawIn').value.trim().toUpperCase().replace(/\s+/g,'');
+  if(!c)return;
+  if(!T){rawLog('Connect first.');return;}
+  if(!(/^AT/.test(c)||/^(01|02|03|06|07|09|0A)[0-9A-F]*$/.test(c))){rawLog('Blocked: only AT commands and read modes are allowed.');return;}
+  try{const r=await T.send(c,8000);rawLog('> '+c+'\n'+r.replace(/\r/g,'\n').trim());}catch(e){rawLog('> '+c+'\nFailed: '+e.message);}
+});
+
+function csvText(){return rec?[['time_s'].concat(rec.cols.map(p=>PIDS[p]?PIDS[p].name+' ('+PIDS[p].unit+')':p==='boost'?'Boost (bar)':'Gear')).join(',')].concat(rec.rows.map(r=>r.join(','))).join('\n'):'';}
+let lastRec=null;
+$('bRec').addEventListener('click',()=>{
+  if(!running){$('recInfo').textContent='Connect first.';return;}
+  if(rec){lastRec=rec;rec=null;$('bRec').textContent='Start recording';$('recInfo').textContent='Saved '+lastRec.rows.length+' rows';return;}
+  const cols=Array.from(supported).filter(p=>PIDS[p]).sort();if(supported.has('0B'))cols.push('boost');cols.push('gear');
+  rec={cols:cols,rows:[]};$('bRec').textContent='Stop recording';
+});
+function currentCsv(){const keep=rec;if(!rec&&lastRec){rec=lastRec;}const t=csvText();rec=keep;return t;}
+$('bCsv').addEventListener('click',()=>{
+  const t=currentCsv();if(!t){$('recInfo').textContent='Nothing recorded yet.';return;}
+  try{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:'text/csv'}));a.download='pathfinder-log.csv';document.body.appendChild(a);a.click();a.remove();}
+  catch(e){$('recInfo').textContent='Download failed. Use Copy CSV instead.';}
+});
+$('bCopy').addEventListener('click',async()=>{
+  const t=currentCsv();if(!t){$('recInfo').textContent='Nothing recorded yet.';return;}
+  try{await navigator.clipboard.writeText(t);$('recInfo').textContent='Copied';}catch(e){$('recInfo').textContent='Copy failed';}
+});
+
+const SK=['coolWarn','coolCrit','boostWarn','iatWarn','voltLow','voltHigh'];
+function fillSettings(){SK.forEach(k=>$('s-'+k).value=S[k]);}
+$('sSave').addEventListener('click',()=>{SK.forEach(k=>{const v=parseFloat($('s-'+k).value);if(!isNaN(v))S[k]=v;});saveJson('pf-settings',S);$('sMsg').textContent='Saved';});
+$('sReset').addEventListener('click',()=>{S=Object.assign({},DEFAULTS);saveJson('pf-settings',S);fillSettings();$('sMsg').textContent='Defaults restored';});
+fillSettings();
+window.addEventListener('resize',drawChart);
+if(!navigator.bluetooth)setStatus('No Web Bluetooth here. Use Bluefy on iPad, or Chrome on Android. Demo mode still works.','');
+</script>
+</body>
+</html>
